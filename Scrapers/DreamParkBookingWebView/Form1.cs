@@ -18,15 +18,23 @@ namespace DreamParkBookingWebView
     public partial class Form1 : Form
     {
         private readonly string DreamParkurl = "https://www.dreamparkcc.or.kr/index.asp";
+        private readonly string LogoutUrl = "https://www.dreamparkcc.or.kr/07membership/logout.asp";
         //Timer Timer = new Timer();
         Random rand = new Random(DateTime.Now.Millisecond);
 
         List<PersonInfo> PersonInfos;
+        Queue<PersonInfo> BookingQueue = new Queue<PersonInfo>();
 
         string PersonInfoFileName = "personInfo.txt";
         string IDFormat = "document.getElementById(\"ms_id\").value = \"{0}\"";
         string PasswordFormat = "document.getElementById(\"ms_password\").value = \"{0}\"";
         string SelectDateFormat = "xmlhttpPost(\"/include/reservation/reservation_time.asp?submitDate={0}&bk_div=I&str2=\",\"/include/reservation/reservation_check.asp?submitDate={0}&bk_div=I\");";
+        string SelectTimeFormat = "xmlhttpPost2(\"/include/reservation/reservation_check.asp?submitDate={0}&bk_div=I&bk_time={1}&pin_no=\", \"I\");";
+        string CheckPhoneFormat = "chkHandPhone(formWait,{0},{1});";
+        string CerNumFormat = "document.formWait.serNum.value = '{0}'";
+        string GetCertNoFormat = "document.formWait.cert_no.value";
+        string ReservationFormat = "sms_send(\"{0}\",\"{1}\",\"I\")";
+
         string[] PhoneFormats = new string[] { "document.getElementById(\"a01_12\").value = \"{0}\"", "document.getElementById(\"a01_12_2\").value = \"{0}\"", "document.getElementById(\"a01_12_3\").value = \"{0}\"" };
         public Form1()
         {
@@ -39,21 +47,21 @@ namespace DreamParkBookingWebView
         {
             var json = File.ReadAllText(PersonInfoFileName);
             PersonInfos = JsonConvert.DeserializeObject<List<PersonInfo>>(json);
+            foreach (var item in PersonInfos)
+            {
+                BookingQueue.Enqueue(item);
+            }
         }
 
-        
+
         private void SetPersonInfos()
         {
             var json = JsonConvert.SerializeObject(PersonInfos);
-            if(File.Exists(PersonInfoFileName))
-            File.Delete(PersonInfoFileName);
-            File.WriteAllText(PersonInfoFileName,json);
+            if (File.Exists(PersonInfoFileName))
+                File.Delete(PersonInfoFileName);
+            File.WriteAllText(PersonInfoFileName, json);
         }
 
-        private void WebView21_NavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
-        {
-            ResetEvent.Set();
-        }
 
         private void Wait(int minSeccond, int maxSeccond)
         {
@@ -81,24 +89,23 @@ namespace DreamParkBookingWebView
             if (webView21 != null && webView21.CoreWebView2 != null)
             {
                 webView21.CoreWebView2.Settings.AreDefaultScriptDialogsEnabled = false;
-                if (PersonInfos != null && PersonInfos.Count > 0)
-                    Book();
+
+                webView21.CoreWebView2.Navigate(DreamParkurl);
             }
         }
 
-        AutoResetEvent ResetEvent = new AutoResetEvent(false);
-        private async void Book()
+        private async void WebView21_NavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
         {
-            foreach (var item in PersonInfos)
+            if(BookingQueue.TryDequeue(out PersonInfo pinfo))
             {
-                webView21.CoreWebView2.Navigate(DreamParkurl);
-                ResetEvent.WaitOne();
+                await Book(pinfo);
+                pinfo.LastReservationDate = DateTime.Now;
+                webView21.CoreWebView2.Navigate(LogoutUrl);
+                SetPersonInfos();
 
-                await Book(item);
-                item.LastReservationDate = DateTime.Now;
+                if (BookingQueue.Count > 0)
+                    webView21.CoreWebView2.Navigate(DreamParkurl);
             }
-
-            SetPersonInfos();
         }
 
         private async Task Book(PersonInfo item)
@@ -114,35 +121,59 @@ namespace DreamParkBookingWebView
                 return;
             }
 
-            var dd = await webView21.ExecuteScriptAsync(string.Format(IDFormat, item.ID));
-            var ddd = await webView21.ExecuteScriptAsync(string.Format(PasswordFormat, item.Password));
-            var result = await webView21.ExecuteScriptAsync("fncLogin()");
+            Wait(4, 8);
+            var dd = await ExecuteAndLogAsync(string.Format(IDFormat, item.ID));
 
-            Wait(2, 4);
+            var ddd = await ExecuteAndLogAsync(string.Format(PasswordFormat, item.Password));
+            var result = await ExecuteAndLogAsync("fncLogin()");
 
-            result = await webView21.ExecuteScriptAsync("xmlhttpPost_real('/include/reservation/reservation01.asp','681');");
+            Wait(1, 5);
+            var source = webView21.Source;
+            result = await ExecuteAndLogAsync("xmlhttpPost_real('/include/reservation/reservation01.asp','200');");  //숫자는 now 대기인 명수 
+            Wait(1, 5);
 
-            Wait(2, 4);
+            var selectDateString = string.Format(SelectDateFormat, targetDate);
+            result = await ExecuteAndLogAsync(selectDateString);
 
-            var selectDateString = string.Format(SelectDateFormat, GetTargetDate());
-            result = await webView21.ExecuteScriptAsync(selectDateString);
-
-            Wait(2, 4);
+            Wait(1, 5);
             //시간대 선택  8 ~ 11
 
-            Wait(4, 6);
-            result = await webView21.ExecuteScriptAsync(string.Format(PhoneFormats[0], item.Phone[0]));
-            result = await webView21.ExecuteScriptAsync(string.Format(PhoneFormats[1], item.Phone[1]));
-            result = await webView21.ExecuteScriptAsync(string.Format(PhoneFormats[2], item.Phone[2]));
-            // sms 요청 
+            string targetTime = "";
+            if (rand.Next(0, 1) == 1)
+                targetTime = "11";
+            else
+                targetTime = "08";
 
-            Wait(10, 20);
-            //sms받은거 확인하는 곳에 입력 
-            //예약 버튼 클릭 
+            var selectTimeString = string.Format(SelectTimeFormat, targetDate, targetTime);
+            result = await ExecuteAndLogAsync(selectTimeString);
+
+            Wait(4, 7);
+            result = await ExecuteAndLogAsync(string.Format(PhoneFormats[0], item.Phone[0]));
+            result = await ExecuteAndLogAsync(string.Format(PhoneFormats[1], item.Phone[1]));
+            result = await ExecuteAndLogAsync(string.Format(PhoneFormats[2], item.Phone[2]));
+
+            result = await ExecuteAndLogAsync(string.Format(CheckPhoneFormat, targetTime, string.Join("", item.Phone)));
+            Wait(10, 30);
+
+            result = await ExecuteAndLogAsync(GetCertNoFormat);
+            var certnumString = string.Format(CerNumFormat, result);
+            await ExecuteAndLogAsync(certnumString);
 
 
+            await ExecuteAndLogAsync(string.Format(ReservationFormat, targetDate, targetTime));
             Wait(2, 4);
-            //예약 됐으면 로그아웃 
+        }
+
+        private async Task<string> ExecuteAndLogAsync(string command)
+        {
+            var result = await webView21.ExecuteScriptAsync(command);
+            Log.Write("DreamLog", result);
+
+            return result;
+        }
+
+        private async void Form1_SizeChanged(object sender, EventArgs e)
+        {
         }
     }
 
