@@ -56,17 +56,20 @@ namespace DreamParkBookingWebView
             if (BookingQueue.TryDequeue(out PersonInfo pinfo))
             {
                 var result = await Book(pinfo);
+                //var result = await Login(pinfo);
+
+                Log.Write("BookingResult", $"{result} {pinfo.ID}");
                 if (result)
                 {
                     pinfo.LastReservationDate = DateTime.Now;
                     SetPersonInfos();
                 }
 
-                webView21.CoreWebView2.Navigate(LogoutUrl);
-                startBooking = false;
-
-                if (BookingQueue.Count > 0)
-                    webView21.CoreWebView2.Navigate(DreamParkurl);
+                if (result)
+                {
+                    webView21.CoreWebView2.Navigate(LogoutUrl);
+                    startBooking = false;
+                }
             }
             else
                 this.Close();
@@ -142,6 +145,17 @@ namespace DreamParkBookingWebView
         {
             if (e.Kind == CoreWebView2ScriptDialogKind.Confirm)
                 e.Accept();
+        }
+
+
+        private async Task<bool> Login(PersonInfo item)
+        {
+            var dd = await ExecuteAndLogAsync(string.Format(IDFormat, item.ID));
+
+            var ddd = await ExecuteAndLogAsync(string.Format(PasswordFormat, item.Password));
+            var result = await ExecuteAndLogAsync("fncLogin()");
+            await Wait(1, 5);
+            return true;
         }
 
         private async Task<bool> Book(PersonInfo item)
